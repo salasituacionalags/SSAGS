@@ -1,0 +1,1667 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sala Situacional | Alcaldía Municipio Gran Sabana</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- SheetJS (XLSX Export) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- FontAwesome & Google Fonts -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    colors: {
+                        granverde: { 50: '#f0fdf4', 600: '#16a34a', 700: '#15803d', 800: '#166534', 900: '#14532d', 950: '#052e16' },
+                        granteal: { 600: '#0d9488', 700: '#0f766e' }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- React & Babel for Single-File React App -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        @media print {
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: white !important; }
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased min-h-screen flex flex-col">
+    <div id="root" class="flex-grow flex flex-col"></div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.firebaseModules = {
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, doc, getDoc, setDoc, onSnapshot, collection
+        };
+        window.dispatchEvent(new Event('firebase-loaded'));
+    </script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const DEFAULT_DEPARTAMENTOS = [
+            { id: 'd1', nombre: 'Desarrollo Social', descripcion: 'Insumos médicos, ayudas técnicas, alimentos y vivienda' },
+            { id: 'd2', nombre: 'Servicios Públicos y Obras Sanitaria', descripcion: 'Aguas blancas, aguas negras, alumbrado y ornato' },
+            { id: 'd3', nombre: 'Vialidad e Infraestructura', descripcion: 'Bacheo, vialidad agrícola y mantenimiento vial' },
+            { id: 'd4', nombre: 'Despacho del Alcalde', descripcion: 'Atención directa, peticiones especiales y comunitarias' }
+        ];
+
+        const DEFAULT_TIPOS = [
+            { id: 't1', departamento_id: 'd1', nombre: 'Insumos Médicos y Medicamentos', activo: true },
+            { id: 't2', departamento_id: 'd1', nombre: 'Solicitud de Vivienda / Materiales', activo: true },
+            { id: 't3', departamento_id: 'd1', nombre: 'Ayuda Social Especial / Alimentos', activo: true },
+            { id: 't4', departamento_id: 'd2', nombre: 'Reparación de Aguas Negras / Cloacas', activo: true },
+            { id: 't5', departamento_id: 'd2', nombre: 'Suministro de Aguas Blancas', activo: true },
+            { id: 't6', departamento_id: 'd2', nombre: 'Mantenimiento de Ornato y Parques', activo: true },
+            { id: 't7', departamento_id: 'd3', nombre: 'Bacheo y Asfaltado', activo: true },
+            { id: 't8', departamento_id: 'd3', nombre: 'Limpieza de Vías / Desmalezamiento', activo: true },
+            { id: 't9', departamento_id: 'd4', nombre: 'Petición General al Despacho', activo: true }
+        ];
+
+        const DEFAULT_USUARIOS = [
+            { id: 'u1', username: 'Administrador', password: 'Pjmm29121976', rol: 'Administrador', activo: true }
+        ];
+
+        function App() {
+            const [currentUser, setCurrentUser] = useState(() => {
+                const saved = localStorage.getItem('gs_current_user');
+                return saved ? JSON.parse(saved) : null;
+            });
+
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+            const [cloudStatus, setCloudStatus] = useState('Conectando a la nube...');
+
+            const [departamentos, setDepartamentos] = useState(DEFAULT_DEPARTAMENTOS);
+            const [tiposCaso, setTiposCaso] = useState(DEFAULT_TIPOS);
+            const [casos, setCasos] = useState([]);
+            const [usuarios, setUsuarios] = useState(DEFAULT_USUARIOS);
+            const [notification, setNotification] = useState(null);
+
+            const isInitialMount = useRef(true);
+
+            // Firebase Cloud Synchronization
+            useEffect(() => {
+                const handleFirebaseReady = async () => {
+                    if (!window.firebaseModules) return;
+                    const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, getFirestore, doc, onSnapshot, setDoc } = window.firebaseModules;
+                    
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'gran-sabana-sala-situacional';
+                    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+
+                    if (!firebaseConfig) {
+                        setCloudStatus('Modo Local (Sin configuración Cloud)');
+                        return;
+                    }
+
+                    try {
+                        const app = initializeApp(firebaseConfig);
+                        const db = getFirestore(app);
+                        const auth = getAuth(app);
+
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+
+                        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'gran_sabana_database');
+
+                        onSnapshot(docRef, (docSnap) => {
+                            if (docSnap.exists()) {
+                                const data = docSnap.data();
+                                if (data.departamentos) setDepartamentos(data.departamentos);
+                                if (data.tiposCaso) setTiposCaso(data.tiposCaso);
+                                if (data.casos) setCasos(data.casos);
+                                if (data.usuarios) setUsuarios(data.usuarios);
+                                setCloudStatus('Sincronizado en la Nube');
+                            } else {
+                                // Initialize cloud document if empty
+                                setDoc(docRef, {
+                                    departamentos: DEFAULT_DEPARTAMENTOS,
+                                    tiposCaso: DEFAULT_TIPOS,
+                                    casos: [],
+                                    usuarios: DEFAULT_USUARIOS
+                                });
+                                setCloudStatus('Inicializado en la Nube');
+                            }
+                            setIsCloudSyncing(true);
+                        }, (error) => {
+                            console.error("Cloud sync error:", error);
+                            setCloudStatus('Error de Sincronización Cloud');
+                        });
+
+                    } catch (e) {
+                        console.error("Firebase init error:", e);
+                        setCloudStatus('Modo Local (Error Cloud)');
+                    }
+                };
+
+                if (window.firebaseModules) {
+                    handleFirebaseReady();
+                } else {
+                    window.addEventListener('firebase-loaded', handleFirebaseReady);
+                }
+            }, []);
+
+            // Save data to cloud or fallback local sync
+            useEffect(() => {
+                if (isInitialMount.current) {
+                    isInitialMount.current = false;
+                    return;
+                }
+
+                const saveDataToCloud = async () => {
+                    if (!window.firebaseModules) return;
+                    const { getFirestore, doc, setDoc, getAuth } = window.firebaseModules;
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'gran-sabana-sala-situacional';
+                    const auth = getAuth();
+
+                    if (!auth.currentUser) return;
+
+                    try {
+                        const db = getFirestore();
+                        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'gran_sabana_database');
+                        await setDoc(docRef, {
+                            departamentos,
+                            tiposCaso,
+                            casos,
+                            usuarios
+                        }, { merge: true });
+                    } catch (err) {
+                        console.error("Error saving to cloud:", err);
+                    }
+                };
+
+                saveDataToCloud();
+            }, [departamentos, tiposCaso, casos, usuarios]);
+
+            useEffect(() => {
+                if (currentUser) {
+                    localStorage.setItem('gs_current_user', JSON.stringify(currentUser));
+                } else {
+                    localStorage.removeItem('gs_current_user');
+                }
+            }, [currentUser]);
+
+            const notify = (msg, type = 'success') => {
+                setNotification({ msg, type });
+                setTimeout(() => setNotification(null), 4000);
+            };
+
+            const handleLogin = (username, password) => {
+                const user = usuarios.find(u => u.username === username && u.password === password && u.activo);
+                if (user) {
+                    setCurrentUser(user);
+                    notify(`¡Bienvenido al sistema, ${user.username}!`);
+                    setActiveTab('dashboard');
+                } else {
+                    notify('Usuario o contraseña incorrectos, o cuenta inactiva.', 'error');
+                }
+            };
+
+            const handleLogout = () => {
+                setCurrentUser(null);
+                notify('Sesión cerrada correctamente.');
+            };
+
+            const addCaso = (nuevo) => {
+                const year = new Date().getFullYear();
+                const count = casos.length + 1;
+                const codigo = `GS-${year}-${String(count).padStart(4, '0')}`;
+                
+                const item = {
+                    id: codigo,
+                    fecha_recepcion: new Date().toISOString(),
+                    estatus: 'Recibido',
+                    observaciones_cierre: '',
+                    fecha_cierre: null,
+                    foto_entrega: null,
+                    registrado_por: currentUser ? currentUser.username : 'Sistema',
+                    ...nuevo
+                };
+
+                setCasos([item, ...casos]);
+                notify(`¡Caso ${codigo} registrado con éxito en la nube!`);
+                setActiveTab('gestion');
+            };
+
+            const updateCaso = (id, updatedFields) => {
+                setCasos(casos.map(s => {
+                    if (s.id === id) {
+                        const merged = { ...s, ...updatedFields };
+                        if (updatedFields.estatus === 'Cerrado' && s.estatus !== 'Cerrado') {
+                            merged.fecha_cierre = new Date().toISOString();
+                        }
+                        return merged;
+                    }
+                    return s;
+                }));
+                notify('Caso actualizado correctamente.');
+            };
+
+            if (!currentUser) {
+                return <LoginView onLogin={handleLogin} usuarios={usuarios} notification={notification} cloudStatus={cloudStatus} />;
+            }
+
+            return (
+                <div className="min-h-screen flex flex-col bg-slate-100">
+                    <header className="bg-granverde-900 text-white shadow-md no-print">
+                        <div className="max-w-7xl mx-auto px-4 py-3 flex flex-col md:flex-row justify-between items-center">
+                            <div className="flex items-center space-x-3 mb-3 md:mb-0">
+                                <div className="bg-white text-granverde-900 p-2.5 rounded-xl shadow-inner font-bold text-xl flex items-center justify-center">
+                                    <i className="fa-solid fa-mountain-sun"></i>
+                                </div>
+                                <div>
+                                    <div className="flex items-center space-x-2">
+                                        <h1 className="text-lg font-bold tracking-tight">Alcaldía Municipio Gran Sabana</h1>
+                                        <span className="text-[10px] bg-emerald-700 text-white px-2 py-0.5 rounded-full font-semibold flex items-center">
+                                            <i className="fa-solid fa-cloud text-[8px] me-1 animate-pulse"></i> Cloud Online
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-granverde-50 font-medium">Sala Situacional y de Autogobierno Ciudadano</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center space-x-4">
+                                <div className="text-right hidden sm:block">
+                                    <div className="text-xs font-semibold text-emerald-300">Bienvenido {currentUser.rol}</div>
+                                    <div className="text-sm font-bold">{currentUser.username}</div>
+                                </div>
+                                <button 
+                                    onClick={handleLogout}
+                                    className="px-3 py-1.5 bg-rose-700 hover:bg-rose-800 text-white rounded-lg text-xs font-semibold transition flex items-center space-x-1">
+                                    <i className="fa-solid fa-power-off"></i>
+                                    <span>Salir</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div className="bg-granverde-950 px-4 py-2 border-t border-granverde-800">
+                            <div className="max-w-7xl mx-auto flex flex-wrap gap-2 justify-between items-center">
+                                <div className="flex flex-wrap gap-2">
+                                    <button 
+                                        onClick={() => setActiveTab('dashboard')}
+                                        className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === 'dashboard' ? 'bg-granverde-700 text-white shadow' : 'text-granverde-50 hover:bg-granverde-800'}`}>
+                                        <i className="fa-solid fa-chart-pie me-1.5"></i> Dashboard
+                                    </button>
+                                    <button 
+                                        onClick={() => setActiveTab('registro')}
+                                        className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === 'registro' ? 'bg-granverde-700 text-white shadow' : 'text-granverde-50 hover:bg-granverde-800'}`}>
+                                        <i className="fa-solid fa-plus-circle me-1.5"></i> Nuevo Caso
+                                    </button>
+                                    <button 
+                                        onClick={() => setActiveTab('gestion')}
+                                        className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === 'gestion' ? 'bg-granverde-700 text-white shadow' : 'text-granverde-50 hover:bg-granverde-800'}`}>
+                                        <i className="fa-solid fa-list-check me-1.5"></i> Gestión de Casos
+                                    </button>
+                                    <button 
+                                        onClick={() => setActiveTab('config')}
+                                        className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === 'config' ? 'bg-granverde-700 text-white shadow' : 'text-granverde-50 hover:bg-granverde-800'}`}>
+                                        <i className="fa-solid fa-gears me-1.5"></i> Configuración
+                                    </button>
+                                    <button 
+                                        onClick={() => setActiveTab('informes')}
+                                        className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === 'informes' ? 'bg-granverde-700 text-white shadow' : 'text-granverde-50 hover:bg-granverde-800'}`}>
+                                        <i className="fa-solid fa-file-lines me-1.5"></i> Informes y Reportes
+                                    </button>
+                                </div>
+                                <div className="text-[11px] text-emerald-300 font-mono hidden lg:block">
+                                    <i className="fa-solid fa-circle-check me-1"></i> {cloudStatus}
+                                </div>
+                            </div>
+                        </div>
+                    </header>
+
+                    {notification && (
+                        <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white px-5 py-3 rounded-xl shadow-2xl flex items-center space-x-3 border-l-4 border-emerald-500 animate-bounce no-print">
+                            <i className="fa-solid fa-circle-check text-emerald-400 text-lg"></i>
+                            <span className="text-sm font-medium">{notification.msg}</span>
+                        </div>
+                    )}
+
+                    <main className="flex-grow max-w-7xl w-full mx-auto px-4 py-6">
+                        {activeTab === 'dashboard' && <DashboardView casos={casos} departamentos={departamentos} tipos={tiposCaso} />}
+                        {activeTab === 'registro' && <RegistroView departamentos={departamentos} tipos={tiposCaso} onSubmit={addCaso} />}
+                        {activeTab === 'gestion' && <GestionView casos={casos} departamentos={departamentos} tipos={tiposCaso} onUpdate={updateCaso} />}
+                        {activeTab === 'config' && <ConfigView currentUser={currentUser} departamentos={departamentos} setDepartamentos={setDepartamentos} tipos={tiposCaso} setTipos={setTiposCaso} casos={casos} setCasos={setCasos} usuarios={usuarios} setUsuarios={setUsuarios} notify={notify} />}
+                        {activeTab === 'informes' && <InformesView casos={casos} departamentos={departamentos} tipos={tiposCaso} />}
+                    </main>
+
+                    <footer className="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-500 no-print">
+                        <p>Alcaldía del Municipio Gran Sabana • Sala Situacional y de Autogobierno Local en la Nube © 2026</p>
+                        <p className="mt-1 text-slate-400">Sistema operativo multi-usuario sincronizado en tiempo real</p>
+                    </footer>
+                </div>
+            );
+        }
+
+        function LoginView({ onLogin, usuarios, notification, cloudStatus }) {
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [showPassword, setShowPassword] = useState(false);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onLogin(username, password);
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-slate-900 px-4">
+                    <div className="max-w-md w-full bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-800">
+                        <div className="bg-granverde-900 text-white p-8 text-center relative">
+                            <div className="inline-flex bg-white text-granverde-900 p-4 rounded-2xl shadow-inner font-bold text-3xl mb-3">
+                                <i className="fa-solid fa-mountain-sun"></i>
+                            </div>
+                            <h1 className="text-xl font-bold tracking-tight">Alcaldía Municipio Gran Sabana</h1>
+                            <p className="text-xs text-granverde-100 mt-1">Sala Situacional • Sistema en la Nube</p>
+                            <div className="mt-3 inline-block bg-emerald-900/80 text-emerald-300 text-[11px] px-3 py-1 rounded-full font-mono">
+                                <i className="fa-solid fa-cloud me-1"></i> {cloudStatus}
+                            </div>
+                        </div>
+
+                        <form onSubmit={handleSubmit} className="p-8 space-y-5">
+                            {notification && (
+                                <div className="bg-rose-50 text-rose-700 p-3 rounded-xl text-xs font-semibold border border-rose-200 flex items-center space-x-2">
+                                    <i className="fa-solid fa-circle-exclamation text-base"></i>
+                                    <span>{notification.msg}</span>
+                                </div>
+                            )}
+
+                            <div>
+                                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Usuario</label>
+                                <input 
+                                    type="text" 
+                                    value={username} 
+                                    onChange={(e) => setUsername(e.target.value)}
+                                    placeholder="Ingrese su nombre de usuario" 
+                                    className="w-full px-4 py-3 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none bg-slate-50"
+                                    required 
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Contraseña</label>
+                                <div className="relative">
+                                    <input 
+                                        type={showPassword ? "text" : "password"} 
+                                        value={password} 
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        placeholder="••••••••••••" 
+                                        className="w-full px-4 py-3 pr-12 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none bg-slate-50"
+                                        required 
+                                    />
+                                    <button 
+                                        type="button" 
+                                        onClick={() => setShowPassword(!showPassword)}
+                                        className="absolute inset-y-0 right-0 px-4 flex items-center text-slate-400 hover:text-slate-700 transition"
+                                        tabIndex="-1">
+                                        <i className={`fa-solid ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <button 
+                                type="submit" 
+                                className="w-full py-3.5 bg-granverde-700 hover:bg-granverde-800 text-white font-bold rounded-xl shadow-lg transition text-sm">
+                                <i className="fa-solid fa-right-to-bracket me-2"></i> Iniciar Sesión en la Nube
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        function DashboardView({ casos, departamentos, tipos }) {
+            const total = casos.length;
+            const recibidas = casos.filter(s => s.estatus === 'Recibido').length;
+            const enTramite = casos.filter(s => s.estatus === 'En Trámite').length;
+            const aprobadas = casos.filter(s => s.estatus === 'Aprobado').length;
+            const cerradas = casos.filter(s => s.estatus === 'Cerrado').length;
+            const rechazadas = casos.filter(s => s.estatus === 'Rechazado').length;
+
+            const chartRef = useRef(null);
+            const chartInstance = useRef(null);
+
+            useEffect(() => {
+                if (chartRef.current) {
+                    if (chartInstance.current) {
+                        chartInstance.current.destroy();
+                    }
+
+                    const ctx = chartRef.current.getContext('2d');
+                    chartInstance.current = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: ['Recibidos', 'En Trámite', 'Aprobados', 'Cerrados', 'Rechazados'],
+                            datasets: [{
+                                data: [recibidas, enTramite, aprobadas, cerradas, rechazadas],
+                                backgroundColor: ['#3b82f6', '#f59e0b', '#06b6d4', '#10b981', '#ef4444'],
+                                borderWidth: 2,
+                                borderColor: '#ffffff'
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { position: 'bottom', labels: { boxWidth: 12, font: { family: 'Inter', size: 12 } } }
+                            }
+                        }
+                    });
+                }
+                return () => {
+                    if (chartInstance.current) chartInstance.current.destroy();
+                };
+            }, [casos]);
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <div>
+                            <h2 className="text-xl font-bold text-slate-900">Panel Estadístico de Casos</h2>
+                            <p className="text-sm text-slate-500">Métricas clave en tiempo real del municipio Gran Sabana.</p>
+                        </div>
+                        <div className="flex gap-2">
+                            <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <i className="fa-solid fa-cloud text-xs me-1.5 text-emerald-600"></i> Nube Sincronizada
+                            </span>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-between">
+                            <div className="flex justify-between items-start">
+                                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total</span>
+                                <div className="p-2 rounded-lg bg-slate-100 text-slate-700"><i className="fa-solid fa-folder-open"></i></div>
+                            </div>
+                            <div className="mt-3">
+                                <span className="text-2xl font-bold text-slate-900">{total}</span>
+                                <p className="text-xs text-slate-500">Casos Totales</p>
+                            </div>
+                        </div>
+
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-between">
+                            <div className="flex justify-between items-start">
+                                <span className="text-xs font-bold text-blue-500 uppercase tracking-wider">Recibidos</span>
+                                <div className="p-2 rounded-lg bg-blue-50 text-blue-600"><i className="fa-solid fa-inbox"></i></div>
+                            </div>
+                            <div className="mt-3">
+                                <span className="text-2xl font-bold text-blue-600">{recibidas}</span>
+                                <p className="text-xs text-slate-500">Por atender</p>
+                            </div>
+                        </div>
+
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-between">
+                            <div className="flex justify-between items-start">
+                                <span className="text-xs font-bold text-amber-500 uppercase tracking-wider">En Trámite</span>
+                                <div className="p-2 rounded-lg bg-amber-50 text-amber-600"><i className="fa-solid fa-spinner"></i></div>
+                            </div>
+                            <div className="mt-3">
+                                <span className="text-2xl font-bold text-amber-600">{enTramite}</span>
+                                <p className="text-xs text-slate-500">En gestión</p>
+                            </div>
+                        </div>
+
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-between">
+                            <div className="flex justify-between items-start">
+                                <span className="text-xs font-bold text-cyan-500 uppercase tracking-wider">Aprobados</span>
+                                <div className="p-2 rounded-lg bg-cyan-50 text-cyan-600"><i className="fa-solid fa-thumbs-up"></i></div>
+                            </div>
+                            <div className="mt-3">
+                                <span className="text-2xl font-bold text-cyan-600">{aprobadas}</span>
+                                <p className="text-xs text-slate-500">Autorizados</p>
+                            </div>
+                        </div>
+
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-between">
+                            <div className="flex justify-between items-start">
+                                <span className="text-xs font-bold text-emerald-500 uppercase tracking-wider">Cerrados</span>
+                                <div className="p-2 rounded-lg bg-emerald-50 text-emerald-600"><i className="fa-solid fa-circle-check"></i></div>
+                            </div>
+                            <div className="mt-3">
+                                <span className="text-2xl font-bold text-emerald-600">{cerradas}</span>
+                                <p className="text-xs text-slate-500">Resueltos</p>
+                            </div>
+                        </div>
+
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-between">
+                            <div className="flex justify-between items-start">
+                                <span className="text-xs font-bold text-rose-500 uppercase tracking-wider">Rechazados</span>
+                                <div className="p-2 rounded-lg bg-rose-50 text-rose-600"><i className="fa-solid fa-circle-xmark"></i></div>
+                            </div>
+                            <div className="mt-3">
+                                <span className="text-2xl font-bold text-rose-600">{rechazadas}</span>
+                                <p className="text-xs text-slate-500">Improcedentes</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 lg:col-span-1 flex flex-col">
+                            <h3 className="text-base font-bold text-slate-900 mb-4">Distribución por Estatus</h3>
+                            <div className="relative flex-grow h-64">
+                                <canvas ref={chartRef}></canvas>
+                            </div>
+                        </div>
+
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 lg:col-span-2 flex flex-col">
+                            <h3 className="text-base font-bold text-slate-900 mb-4">Casos por Dirección / Departamento</h3>
+                            <div className="space-y-4 flex-grow overflow-y-auto max-h-72">
+                                {departamentos.map(dep => {
+                                    const count = casos.filter(s => s.departamento_id === dep.id).length;
+                                    const percentage = total > 0 ? Math.round((count / total) * 100) : 0;
+                                    return (
+                                        <div key={dep.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                                            <div className="flex justify-between items-center mb-1.5">
+                                                <span className="font-semibold text-sm text-slate-800">{dep.nombre}</span>
+                                                <span className="text-xs font-bold bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full">{count} casos ({percentage}%)</span>
+                                            </div>
+                                            <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                                                <div className="bg-granverde-600 h-full rounded-full transition-all duration-500" style={{ width: `${percentage}%` }}></div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function RegistroView({ departamentos, tipos, onSubmit }) {
+            const [departamentoId, setDepartamentoId] = useState(departamentos[0]?.id || '');
+            const [tipoId, setTipoId] = useState('');
+            const [cedula, setCedula] = useState('');
+            const [nombre, setNombre] = useState('');
+            const [telefono, setTelefono] = useState('');
+            const [parroquia, setParroquia] = useState('Parroquia Santa Elena de Uairén');
+            const [direccion, setDireccion] = useState('');
+            const [descripcion, setDescripcion] = useState('');
+            const [prioridad, setPrioridad] = useState('Media');
+            const [fotoSolicitud, setFotoSolicitud] = useState(null);
+
+            const tiposFiltrados = tipos.filter(t => t.departamento_id === departamentoId && t.activo);
+
+            useEffect(() => {
+                if (tiposFiltrados.length > 0) {
+                    setTipoId(tiposFiltrados[0].id);
+                } else {
+                    setTipoId('');
+                }
+            }, [departamentoId]);
+
+            const handleFileChange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onloadend = () => setFotoSolicitud(reader.result);
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!cedula || !nombre || !telefono || !descripcion) {
+                    alert('Por favor complete los campos obligatorios del ciudadano y el caso.');
+                    return;
+                }
+
+                onSubmit({
+                    departamento_id: departamentoId,
+                    tipo_solicitud_id: tipoId,
+                    cedula,
+                    nombre_completo: nombre,
+                    telefono,
+                    sector_parroquia: parroquia,
+                    direccion_detallada: direccion,
+                    descripcion_caso: descripcion,
+                    prioridad,
+                    foto_solicitud: fotoSolicitud
+                });
+            };
+
+            return (
+                <div className="max-w-4xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="bg-granverde-800 text-white px-6 py-4 flex items-center justify-between">
+                        <div>
+                            <h2 className="text-lg font-bold">Registro de Nuevo Caso Ciudadano</h2>
+                            <p className="text-xs text-granverde-50">Ingrese los datos de la petición recibida en la Sala Situacional.</p>
+                        </div>
+                        <div className="bg-granverde-700 p-2 rounded-xl">
+                            <i className="fa-solid fa-user-pen text-xl"></i>
+                        </div>
+                    </div>
+                    
+                    <form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Departamento / Dirección Responsable</label>
+                                <select 
+                                    value={departamentoId} 
+                                    onChange={(e) => setDepartamentoId(e.target.value)}
+                                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-granverde-600 focus:outline-none text-sm bg-slate-50">
+                                    {departamentos.map(d => (
+                                        <option key={d.id} value={d.id}>{d.nombre}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Tipo de Caso / Solicitud</label>
+                                <select 
+                                    value={tipoId} 
+                                    onChange={(e) => setTipoId(e.target.value)}
+                                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-granverde-600 focus:outline-none text-sm bg-slate-50"
+                                    required>
+                                    {tiposFiltrados.length === 0 ? (
+                                        <option value="">No hay tipos activos en esta dirección</option>
+                                    ) : (
+                                        tiposFiltrados.map(t => (
+                                            <option key={t.id} value={t.id}>{t.nombre}</option>
+                                        ))
+                                    )}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div className="border-t border-slate-200 pt-6">
+                            <h3 className="text-sm font-bold text-slate-900 mb-4 flex items-center">
+                                <i className="fa-solid fa-id-card text-granverde-700 me-2"></i> Datos del Ciudadano Solicitante
+                            </h3>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Cédula de Identidad *</label>
+                                    <input 
+                                        type="text" 
+                                        value={cedula} 
+                                        onChange={(e) => setCedula(e.target.value)}
+                                        placeholder="Ej. V-12345678" 
+                                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                        required 
+                                    />
+                                </div>
+                                <div className="md:col-span-2">
+                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Nombre y Apellido Completo *</label>
+                                    <input 
+                                        type="text" 
+                                        value={nombre} 
+                                        onChange={(e) => setNombre(e.target.value)}
+                                        placeholder="Ej. Juan Pérez" 
+                                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                        required 
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Teléfono de Contacto *</label>
+                                    <input 
+                                        type="text" 
+                                        value={telefono} 
+                                        onChange={(e) => setTelefono(e.target.value)}
+                                        placeholder="Ej. 0414-1234567" 
+                                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                        required 
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Parroquia / Sector (Gran Sabana) *</label>
+                                    <select 
+                                        value={parroquia} 
+                                        onChange={(e) => setParroquia(e.target.value)}
+                                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none">
+                                        <option value="Parroquia Santa Elena de Uairén">Parroquia Santa Elena de Uairén</option>
+                                        <option value="Parroquia Ikabarú">Parroquia Ikabarú</option>
+                                        <option value="Parroquia Dabayán">Parroquia Dabayán</option>
+                                        <option value="Parroquia Kumarakapay">Parroquia Kumarakapay (San Francisco de Yurani)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Prioridad del Caso</label>
+                                    <select 
+                                        value={prioridad} 
+                                        onChange={(e) => setPrioridad(e.target.value)}
+                                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none">
+                                        <option value="Baja">Baja</option>
+                                        <option value="Media">Media</option>
+                                        <option value="Alta">Alta</option>
+                                        <option value="Urgente">Urgente</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div className="mt-4">
+                                <label className="block text-xs font-semibold text-slate-600 mb-1">Dirección Exacta o Referencia *</label>
+                                <input 
+                                    type="text" 
+                                    value={direccion} 
+                                    onChange={(e) => setDireccion(e.target.value)}
+                                    placeholder="Ej. Calle Principal, sector Manakatá, casa #12" 
+                                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                    required 
+                                />
+                            </div>
+                        </div>
+
+                        <div className="border-t border-slate-200 pt-6">
+                            <h3 className="text-sm font-bold text-slate-900 mb-4 flex items-center">
+                                <i className="fa-solid fa-file-pen text-granverde-700 me-2"></i> Descripción del Caso y Evidencia Inicial
+                            </h3>
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Detalle de la Petición *</label>
+                                    <textarea 
+                                        rows="3" 
+                                        value={descripcion} 
+                                        onChange={(e) => setDescripcion(e.target.value)}
+                                        placeholder="Describa detalladamente lo que solicita el ciudadano..." 
+                                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                        required></textarea>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Foto Inicial del Caso (Opcional)</label>
+                                    <input 
+                                        type="file" 
+                                        accept="image/*"
+                                        onChange={handleFileChange}
+                                        className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-emerald-50 file:text-granverde-700 hover:file:bg-emerald-100" 
+                                    />
+                                    <p className="text-[11px] text-slate-400 mt-1">Puede adjuntar una foto del daño, receta médica o documento físico recibido.</p>
+                                    {fotoSolicitud && (
+                                        <div className="mt-2 flex items-center space-x-2">
+                                            <span className="text-xs text-emerald-600 font-semibold"><i className="fa-solid fa-check"></i> Imagen cargada con éxito</span>
+                                            <button type="button" onClick={() => setFotoSolicitud(null)} className="text-xs text-rose-500 hover:underline">Quitar</button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="border-t border-slate-200 pt-6 flex justify-end">
+                            <button 
+                                type="submit" 
+                                className="px-6 py-3 bg-granverde-700 hover:bg-granverde-800 text-white font-semibold rounded-xl shadow-lg transition flex items-center space-x-2 text-sm">
+                                <i className="fa-solid fa-floppy-disk"></i>
+                                <span>Registrar Caso en la Nube</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            );
+        }
+
+        function GestionView({ casos, departamentos, tipos, onUpdate }) {
+            const [search, setSearch] = useState('');
+            const [filterEstatus, setFilterEstatus] = useState('TODOS');
+            const [filterDep, setFilterDep] = useState('TODOS');
+            const [selectedCaso, setSelectedCaso] = useState(null);
+
+            const filtered = casos.filter(s => {
+                const matchSearch = s.id.toLowerCase().includes(search.toLowerCase()) ||
+                                    s.cedula.toLowerCase().includes(search.toLowerCase()) ||
+                                    s.nombre_completo.toLowerCase().includes(search.toLowerCase()) ||
+                                    s.descripcion_caso.toLowerCase().includes(search.toLowerCase());
+                const matchEstatus = filterEstatus === 'TODOS' || s.estatus === filterEstatus;
+                const matchDep = filterDep === 'TODOS' || s.departamento_id === filterDep;
+                return matchSearch && matchEstatus && matchDep;
+            });
+
+            return (
+                <div className="space-y-6">
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                        <div>
+                            <h2 className="text-xl font-bold text-slate-900">Gestión y Seguimiento de Casos</h2>
+                            <p className="text-sm text-slate-500">Administre el estatus, revise evidencias y cierre casos sincronizados en tiempo real.</p>
+                        </div>
+                        <div className="text-xs font-bold bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg">
+                            Total Registros: {filtered.length} de {casos.length}
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                            <label className="block text-xs font-bold text-slate-600 mb-1">Buscador Rápido</label>
+                            <div className="relative">
+                                <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400"><i className="fa-solid fa-search"></i></span>
+                                <input 
+                                    type="text" 
+                                    value={search} 
+                                    onChange={(e) => setSearch(e.target.value)}
+                                    placeholder="Buscar por código, cédula o nombre..." 
+                                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                />
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-xs font-bold text-slate-600 mb-1">Filtrar por Estatus</label>
+                            <select 
+                                value={filterEstatus} 
+                                onChange={(e) => setFilterEstatus(e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none">
+                                <option value="TODOS">Todos los Estatus</option>
+                                <option value="Recibido">Recibido</option>
+                                <option value="En Trámite">En Trámite</option>
+                                <option value="Aprobado">Aprobado</option>
+                                <option value="Cerrado">Cerrado (Resuelto)</option>
+                                <option value="Rechazado">Rechazado</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="block text-xs font-bold text-slate-600 mb-1">Filtrar por Departamento</label>
+                            <select 
+                                value={filterDep} 
+                                onChange={(e) => setFilterDep(e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none">
+                                <option value="TODOS">Todas las Direcciones</option>
+                                {departamentos.map(d => (
+                                    <option key={d.id} value={d.id}>{d.nombre}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">
+                                <thead>
+                                    <tr className="bg-slate-50 text-slate-600 text-xs font-bold uppercase tracking-wider border-b border-slate-200">
+                                        <th className="p-4">Código / Fecha</th>
+                                        <th className="p-4">Ciudadano</th>
+                                        <th className="p-4">Tipo y Dirección</th>
+                                        <th className="p-4">Prioridad</th>
+                                        <th className="p-4">Estatus</th>
+                                        <th className="p-4 text-center">Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 text-sm">
+                                    {filtered.length === 0 ? (
+                                        <tr>
+                                            <td colSpan="6" className="p-8 text-center text-slate-400">
+                                                No se encontraron casos con los filtros seleccionados.
+                                            </td>
+                                        </tr>
+                                    ) : (
+                                        filtered.map(s => {
+                                            const dep = departamentos.find(d => d.id === s.departamento_id)?.nombre || 'General';
+                                            const tipo = tipos.find(t => t.id === s.tipo_solicitud_id)?.nombre || 'Petición';
+                                            return (
+                                                <tr key={s.id} className="hover:bg-slate-50 transition">
+                                                    <td className="p-4">
+                                                        <span className="font-bold text-slate-900">{s.id}</span>
+                                                        <div className="text-xs text-slate-400 mt-0.5">{new Date(s.fecha_recepcion).toLocaleString()}</div>
+                                                        <div className="text-[10px] text-slate-400">Reg: {s.registrado_por || 'Sistema'}</div>
+                                                    </td>
+                                                    <td className="p-4">
+                                                        <div className="font-semibold text-slate-800">{s.nombre_completo}</div>
+                                                        <div className="text-xs text-slate-500">C.I. {s.cedula} • {s.telefono}</div>
+                                                    </td>
+                                                    <td className="p-4">
+                                                        <div className="font-medium text-slate-800">{tipo}</div>
+                                                        <div className="text-xs text-slate-500">{dep}</div>
+                                                        <div className="text-[11px] text-emerald-700 font-medium">{s.sector_parroquia}</div>
+                                                    </td>
+                                                    <td className="p-4">
+                                                        <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-semibold ${
+                                                            s.prioridad === 'Urgente' ? 'bg-rose-100 text-rose-700' :
+                                                            s.prioridad === 'Alta' ? 'bg-amber-100 text-amber-800' :
+                                                            'bg-slate-100 text-slate-700'
+                                                        }`}>
+                                                            {s.prioridad}
+                                                        </span>
+                                                    </td>
+                                                    <td className="p-4">
+                                                        <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-semibold ${
+                                                            s.estatus === 'Cerrado' ? 'bg-emerald-100 text-emerald-800' :
+                                                            s.estatus === 'En Trámite' ? 'bg-amber-100 text-amber-800' :
+                                                            s.estatus === 'Aprobado' ? 'bg-cyan-100 text-cyan-800' :
+                                                            s.estatus === 'Rechazado' ? 'bg-rose-100 text-rose-800' :
+                                                            'bg-blue-100 text-blue-800'
+                                                        }`}>
+                                                            {s.estatus}
+                                                        </span>
+                                                    </td>
+                                                    <td className="p-4 text-center">
+                                                        <button 
+                                                            onClick={() => setSelectedCaso(s)}
+                                                            className="px-3 py-1.5 bg-slate-100 hover:bg-granverde-600 hover:text-white text-slate-700 rounded-lg text-xs font-semibold transition">
+                                                            <i className="fa-solid fa-eye me-1"></i> Gestionar
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    {selectedCaso && (
+                        <ModalGestion 
+                            caso={selectedCaso} 
+                            departamentos={departamentos}
+                            tipos={tipos}
+                            onClose={() => setSelectedCaso(null)}
+                            onSave={updateCaso}
+                        />
+                    )}
+                </div>
+            );
+        }
+
+        function ModalGestion({ caso, departamentos, tipos, onClose, onSave }) {
+            const [estatus, setEstatus] = useState(caso.estatus);
+            const [observaciones, setObservaciones] = useState(caso.observaciones_cierre || '');
+            const [fotoEntrega, setFotoEntrega] = useState(caso.foto_entrega || null);
+
+            const dep = departamentos.find(d => d.id === caso.departamento_id)?.nombre || '';
+            const tipo = tipos.find(t => t.id === caso.tipo_solicitud_id)?.nombre || '';
+
+            const handleFile = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onloadend = () => setFotoEntrega(reader.result);
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onSave(caso.id, {
+                    estatus,
+                    observaciones_cierre: observaciones,
+                    foto_entrega: fotoEntrega
+                });
+                onClose();
+            };
+
+            return (
+                <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+                    <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-200">
+                        <div className="bg-granverde-800 text-white px-6 py-4 flex justify-between items-center">
+                            <div>
+                                <h3 className="font-bold text-lg">Gestionar Caso: {caso.id}</h3>
+                                <p className="text-xs text-granverde-50">Fecha de recepción: {new Date(caso.fecha_recepcion).toLocaleString()}</p>
+                            </div>
+                            <button onClick={onClose} className="text-white hover:text-slate-200 text-xl font-bold p-1"><i className="fa-solid fa-xmark"></i></button>
+                        </div>
+
+                        <form onSubmit={handleSubmit} className="p-6 space-y-6 max-h-[80vh] overflow-y-auto">
+                            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                                <div><strong>Ciudadano:</strong> {caso.nombre_completo}</div>
+                                <div><strong>Cédula:</strong> {caso.cedula}</div>
+                                <div><strong>Teléfono:</strong> {caso.telefono}</div>
+                                <div><strong>Ubicación:</strong> {caso.sector_parroquia}</div>
+                                <div className="md:col-span-2"><strong>Dirección:</strong> {caso.direccion_detallada}</div>
+                                <div className="md:col-span-2"><strong>Departamento:</strong> {dep} → {tipo}</div>
+                            </div>
+
+                            <div>
+                                <h4 className="text-xs font-bold text-slate-700 uppercase mb-1">Descripción del Caso</h4>
+                                <p className="text-sm text-slate-600 bg-slate-100 p-3 rounded-xl italic">"{caso.descripcion_caso}"</p>
+                            </div>
+
+                            {caso.foto_solicitud && (
+                                <div>
+                                    <h4 className="text-xs font-bold text-slate-700 uppercase mb-2">Evidencia Fotográfica Inicial</h4>
+                                    <img src={caso.foto_solicitud} alt="Foto inicial" className="h-40 rounded-xl border shadow-sm object-cover" />
+                                </div>
+                            )}
+
+                            <div className="border-t border-slate-200 pt-4 space-y-4">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Actualizar Estatus del Caso</label>
+                                    <select 
+                                        value={estatus} 
+                                        onChange={(e) => setEstatus(e.target.value)}
+                                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-semibold text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none">
+                                        <option value="Recibido">Recibido</option>
+                                        <option value="En Trámite">En Trámite</option>
+                                        <option value="Aprobado">Aprobado</option>
+                                        <option value="Cerrado">Cerrado (Resuelto)</option>
+                                        <option value="Rechazado">Rechazado</option>
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Observaciones de Resolución o Cierre</label>
+                                    <textarea 
+                                        rows="2" 
+                                        value={observaciones} 
+                                        onChange={(e) => setObservaciones(e.target.value)}
+                                        placeholder="Ingrese notas sobre la solución aplicada..." 
+                                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"></textarea>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Foto de Entrega / Solución (Opcional)</label>
+                                    <input 
+                                        type="file" 
+                                        accept="image/*"
+                                        onChange={handleFile}
+                                        className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-emerald-50 file:text-granverde-700 hover:file:bg-emerald-100" 
+                                    />
+                                    <p className="text-[11px] text-slate-400 mt-1">El sistema permite cerrar el caso sin ser prioritario cargar esta foto.</p>
+                                    {fotoEntrega && (
+                                        <div className="mt-2 flex items-center space-x-2">
+                                            <span className="text-xs text-emerald-600 font-semibold"><i className="fa-solid fa-check"></i> Foto de entrega cargada</span>
+                                            <button type="button" onClick={() => setFotoEntrega(null)} className="text-xs text-rose-500 hover:underline">Quitar</button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="border-t border-slate-200 pt-4 flex justify-end space-x-3">
+                                <button 
+                                    type="button" 
+                                    onClick={onClose}
+                                    className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold rounded-xl text-sm transition">
+                                    Cancelar
+                                </button>
+                                <button 
+                                    type="submit" 
+                                    className="px-5 py-2 bg-granverde-700 hover:bg-granverde-800 text-white font-semibold rounded-xl text-sm shadow transition">
+                                    Guardar Cambios
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        function ConfigView({ currentUser, departamentos, setDepartamentos, tipos, setTipos, casos, setCasos, usuarios, setUsuarios, notify }) {
+            const [nuevoDepNombre, setNuevoDepNombre] = useState('');
+            const [nuevoDepDesc, setNuevoDepDesc] = useState('');
+            
+            const [depSelected, setDepSelected] = useState(departamentos[0]?.id || '');
+            const [nuevoTipoNombre, setNuevoTipoNombre] = useState('');
+
+            const [newUsername, setNewUsername] = useState('');
+            const [newPassword, setNewPassword] = useState('');
+            const [newRol, setNewRol] = useState('Operador');
+
+            const [editingUser, setEditingUser] = useState(null);
+            const [editUsername, setEditUsername] = useState('');
+            const [editPassword, setEditPassword] = useState('');
+            const [editRol, setEditRol] = useState('');
+
+            const handleAddDepartamento = (e) => {
+                e.preventDefault();
+                if (!nuevoDepNombre.trim()) return;
+                const newId = 'd_' + Date.now();
+                setDepartamentos([...departamentos, { id: newId, nombre: nuevoDepNombre, descripcion: nuevoDepDesc }]);
+                setNuevoDepNombre('');
+                setNuevoDepDesc('');
+                notify('Departamento agregado correctamente.');
+            };
+
+            const handleAddTipo = (e) => {
+                e.preventDefault();
+                if (!nuevoTipoNombre.trim()) return;
+                const newId = 't_' + Date.now();
+                setTipos([...tipos, { id: newId, departamento_id: depSelected, nombre: nuevoTipoNombre, activo: true }]);
+                setNuevoTipoNombre('');
+                notify('Tipo de caso agregado correctamente.');
+            };
+
+            const toggleTipoActivo = (id) => {
+                setTipos(tipos.map(t => t.id === id ? { ...t, activo: !t.activo } : t));
+                notify('Estatus del tipo actualizado.');
+            };
+
+            const handleCreateUser = (e) => {
+                e.preventDefault();
+                if (!newUsername.trim() || !newPassword.trim()) {
+                    alert('Complete el nombre de usuario y contraseña.');
+                    return;
+                }
+                if (usuarios.some(u => u.username.toLowerCase() === newUsername.toLowerCase())) {
+                    alert('Ya existe un usuario con ese nombre.');
+                    return;
+                }
+
+                const newUser = {
+                    id: 'u_' + Date.now(),
+                    username: newUsername.trim(),
+                    password: newPassword.trim(),
+                    rol: newRol,
+                    activo: true
+                };
+
+                setUsuarios([...usuarios, newUser]);
+                setNewUsername('');
+                setNewPassword('');
+                notify(`Usuario "${newUser.username}" creado con éxito.`);
+            };
+
+            const startEditUser = (u) => {
+                setEditingUser(u);
+                setEditUsername(u.username);
+                setEditPassword(u.password);
+                setEditRol(u.rol);
+            };
+
+            const handleSaveEditUser = (e) => {
+                e.preventDefault();
+                if (!editUsername.trim() || !editPassword.trim()) {
+                    alert('Complete los campos.');
+                    return;
+                }
+
+                setUsuarios(usuarios.map(u => {
+                    if (u.id === editingUser.id) {
+                        return { ...u, username: editUsername.trim(), password: editPassword.trim(), rol: editRol };
+                    }
+                    return u;
+                }));
+
+                setEditingUser(null);
+                notify('Usuario actualizado con éxito.');
+            };
+
+            const toggleUserActive = (id) => {
+                setUsuarios(usuarios.map(u => {
+                    if (u.id === id) {
+                        if (u.username === 'Administrador') {
+                            alert('No se puede desactivar al Administrador principal.');
+                            return u;
+                        }
+                        return { ...u, activo: !u.activo };
+                    }
+                    return u;
+                }));
+                notify('Estatus de usuario actualizado.');
+            };
+
+            const exportBackup = () => {
+                const backupData = {
+                    departamentos,
+                    tipos,
+                    casos,
+                    usuarios,
+                    fecha_respaldo: new Date().toISOString()
+                };
+                const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Respaldo_Sistema_GranSabana_${new Date().toISOString().slice(0,10)}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                notify('Archivo de respaldo exportado con éxito.');
+            };
+
+            const importBackup = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const data = JSON.parse(event.target.result);
+                        if (data.departamentos && data.tipos && data.casos) {
+                            setDepartamentos(data.departamentos);
+                            setTipos(data.tipos);
+                            setCasos(data.casos);
+                            if (data.usuarios) setUsuarios(data.usuarios);
+                            notify('¡Respaldo importado y restaurado en la nube con éxito!');
+                        } else {
+                            alert('El archivo JSON no tiene la estructura válida de respaldo.');
+                        }
+                    } catch (err) {
+                        alert('Error al leer el archivo JSON.');
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <h2 className="text-xl font-bold text-slate-900">Configuración y Personalización del Sistema</h2>
+                        <p className="text-sm text-slate-500">Gestión de respaldos, direcciones, tipos de caso y control de acceso de usuarios en la nube.</p>
+                    </div>
+
+                    {currentUser.username === 'Administrador' || currentUser.rol === 'Administrador' ? (
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
+                            <div className="border-b pb-3 flex justify-between items-center">
+                                <div>
+                                    <h3 className="text-base font-bold text-slate-900"><i className="fa-solid fa-users-gear text-granverde-700 me-2"></i> Gestión de Usuarios y Credenciales en la Nube</h3>
+                                    <p className="text-xs text-slate-500">Panel exclusivo del Administrador para crear, editar nombres de usuario y claves.</p>
+                                </div>
+                                <span className="bg-emerald-100 text-emerald-800 text-xs font-bold px-3 py-1 rounded-full">Acceso Autorizado (Admin)</span>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 lg:col-span-1">
+                                    <h4 className="font-bold text-sm text-slate-800 mb-3"><i className="fa-solid fa-user-plus me-1 text-granverde-700"></i> Crear Nuevo Usuario</h4>
+                                    <form onSubmit={handleCreateUser} className="space-y-3">
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-600 mb-1">Nombre de Usuario</label>
+                                            <input 
+                                                type="text" 
+                                                value={newUsername} 
+                                                onChange={(e) => setNewUsername(e.target.value)}
+                                                placeholder="Ej. operador1" 
+                                                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                                required 
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-600 mb-1">Contraseña</label>
+                                            <input 
+                                                type="text" 
+                                                value={newPassword} 
+                                                onChange={(e) => setNewPassword(e.target.value)}
+                                                placeholder="Contraseña segura" 
+                                                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                                required 
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-600 mb-1">Rol en el Sistema</label>
+                                            <select 
+                                                value={newRol} 
+                                                onChange={(e) => setNewRol(e.target.value)}
+                                                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none">
+                                                <option value="Operador">Operador (Sala Situacional)</option>
+                                                <option value="Administrador">Administrador</option>
+                                                <option value="Visualizador">Visualizador / Despacho</option>
+                                            </select>
+                                        </div>
+                                        <button type="submit" className="w-full py-2.5 bg-granverde-700 hover:bg-granverde-800 text-white font-semibold rounded-xl text-xs shadow transition">
+                                            Crear Usuario
+                                        </button>
+                                    </form>
+                                </div>
+
+                                <div className="lg:col-span-2 space-y-3">
+                                    <h4 className="font-bold text-sm text-slate-800 mb-2">Usuarios Registrados en la Nube</h4>
+                                    <div className="overflow-x-auto border rounded-xl">
+                                        <table className="w-full text-left text-xs border-collapse">
+                                            <thead>
+                                                <tr className="bg-slate-100 text-slate-700 font-bold border-b">
+                                                    <th className="p-3">Usuario</th>
+                                                    <th className="p-3">Contraseña</th>
+                                                    <th className="p-3">Rol</th>
+                                                    <th className="p-3">Estatus</th>
+                                                    <th className="p-3 text-center">Acciones</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y">
+                                                {usuarios.map(u => (
+                                                    <tr key={u.id} className="hover:bg-slate-50">
+                                                        <td className="p-3 font-bold text-slate-900">{u.username}</td>
+                                                        <td className="p-3 font-mono text-slate-600">{u.password}</td>
+                                                        <td className="p-3"><span className="bg-slate-200 text-slate-700 px-2 py-0.5 rounded-md font-semibold">{u.rol}</span></td>
+                                                        <td className="p-3">
+                                                            <span className={`px-2 py-0.5 rounded-md font-semibold ${u.activo ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                                                                {u.activo ? 'Activo' : 'Inactivo'}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-3 text-center space-x-2">
+                                                            <button 
+                                                                onClick={() => startEditUser(u)}
+                                                                className="px-2.5 py-1 bg-slate-100 hover:bg-blue-600 hover:text-white rounded text-slate-700 font-semibold transition">
+                                                                <i className="fa-solid fa-pen"></i> Editar
+                                                            </button>
+                                                            {u.username !== 'Administrador' && (
+                                                                <button 
+                                                                    onClick={() => toggleUserActive(u.id)}
+                                                                    className={`px-2.5 py-1 rounded font-semibold ${u.activo ? 'bg-rose-100 text-rose-700 hover:bg-rose-200' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'}`}>
+                                                                    {u.activo ? 'Desactivar' : 'Activar'}
+                                                                </button>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex items-center space-x-3 text-amber-800 text-xs">
+                            <i className="fa-solid fa-shield-halved text-xl"></i>
+                            <span>El módulo de gestión de usuarios y credenciales solo está disponible al iniciar sesión con el usuario <strong>Administrador</strong>.</span>
+                        </div>
+                    )}
+
+                    {editingUser && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden p-6 space-y-4">
+                                <div className="flex justify-between items-center border-b pb-3">
+                                    <h3 className="font-bold text-base text-slate-900">Editar Usuario: {editingUser.username}</h3>
+                                    <button onClick={() => setEditingUser(null)} className="text-slate-400 hover:text-slate-700 font-bold"><i className="fa-solid fa-xmark text-lg"></i></button>
+                                </div>
+                                <form onSubmit={handleSaveEditUser} className="space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Nombre de Usuario</label>
+                                        <input 
+                                            type="text" 
+                                            value={editUsername} 
+                                            onChange={(e) => setEditUsername(e.target.value)}
+                                            className="w-full px-3 py-2 rounded-xl border text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                            required 
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Contraseña</label>
+                                        <input 
+                                            type="text" 
+                                            value={editPassword} 
+                                            onChange={(e) => setEditPassword(e.target.value)}
+                                            className="w-full px-3 py-2 rounded-xl border text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                            required 
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Rol</label>
+                                        <select 
+                                            value={editRol} 
+                                            onChange={(e) => setEditRol(e.target.value)}
+                                            className="w-full px-3 py-2 rounded-xl border text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none">
+                                            <option value="Operador">Operador</option>
+                                            <option value="Administrador">Administrador</option>
+                                            <option value="Visualizador">Visualizador</option>
+                                        </select>
+                                    </div>
+                                    <div className="flex justify-end space-x-2 pt-2">
+                                        <button type="button" onClick={() => setEditingUser(null)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold">Cancelar</button>
+                                        <button type="submit" className="px-4 py-2 bg-granverde-700 text-white rounded-xl text-xs font-semibold shadow">Guardar Cambios</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+                        <h3 className="text-base font-bold text-slate-900 border-b pb-2"><i className="fa-solid fa-database text-granverde-700 me-2"></i> Gestión de Respaldos de Seguridad (Backup Cloud)</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between">
+                                <div>
+                                    <h4 className="font-semibold text-sm text-slate-800 mb-1">Exportar Copia de Seguridad</h4>
+                                    <p className="text-xs text-slate-500 mb-3">Descarga un archivo JSON con todos los casos, tipos, departamentos y usuarios actuales en la nube.</p>
+                                </div>
+                                <button 
+                                    onClick={exportBackup}
+                                    className="px-4 py-2 bg-granverde-700 hover:bg-granverde-800 text-white font-semibold rounded-xl text-xs shadow transition flex items-center justify-center space-x-2">
+                                    <i className="fa-solid fa-download"></i>
+                                    <span>Descargar Archivo de Respaldo (.json)</span>
+                                </button>
+                            </div>
+
+                            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between">
+                                <div>
+                                    <h4 className="font-semibold text-sm text-slate-800 mb-1">Restaurar Respaldo en la Nube</h4>
+                                    <p className="text-xs text-slate-500 mb-3">Carga un archivo de respaldo previo para sincronizar y restaurar los datos en tiempo real.</p>
+                                </div>
+                                <div>
+                                    <input 
+                                        type="file" 
+                                        accept=".json"
+                                        onChange={importBackup}
+                                        className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-granverde-700 hover:file:bg-emerald-100" 
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+                            <h3 className="text-base font-bold text-slate-900 border-b pb-2"><i className="fa-solid fa-building-columns text-granverde-700 me-2"></i> Departamentos / Direcciones</h3>
+                            
+                            <form onSubmit={handleAddDepartamento} className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-600 mb-1">Nombre del Departamento</label>
+                                    <input 
+                                        type="text" 
+                                        value={nuevoDepNombre} 
+                                        onChange={(e) => setNuevoDepNombre(e.target.value)}
+                                        placeholder="Ej. Dirección de Obras Públicas" 
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                        required 
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-600 mb-1">Descripción Breve</label>
+                                    <input 
+                                        type="text" 
+                                        value={nuevoDepDesc} 
+                                        onChange={(e) => setNuevoDepDesc(e.target.value)}
+                                        placeholder="Ej. Gestión de vialidad y ornato" 
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                    />
+                                </div>
+                                <button type="submit" className="w-full py-2 bg-granverde-700 hover:bg-granverde-800 text-white font-semibold rounded-xl text-xs shadow transition">
+                                    <i className="fa-solid fa-plus me-1"></i> Agregar Departamento
+                                </button>
+                            </form>
+
+                            <div className="space-y-2 max-h-60 overflow-y-auto">
+                                {departamentos.map(d => (
+                                    <div key={d.id} className="p-3 bg-white rounded-xl border border-slate-200 flex justify-between items-center">
+                                        <div>
+                                            <span className="font-semibold text-sm text-slate-800">{d.nombre}</span>
+                                            <p className="text-xs text-slate-400">{d.descripcion}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+                            <h3 className="text-base font-bold text-slate-900 border-b pb-2"><i className="fa-solid fa-tags text-granverde-700 me-2"></i> Tipos de Caso</h3>
+                            
+                            <form onSubmit={handleAddTipo} className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-600 mb-1">Asociar al Departamento</label>
+                                    <select 
+                                        value={depSelected} 
+                                        onChange={(e) => setDepSelected(e.target.value)}
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none">
+                                        {departamentos.map(d => (
+                                            <option key={d.id} value={d.id}>{d.nombre}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-600 mb-1">Nombre del Tipo de Caso</label>
+                                    <input 
+                                        type="text" 
+                                        value={nuevoTipoNombre} 
+                                        onChange={(e) => setNuevoTipoNombre(e.target.value)}
+                                        placeholder="Ej. Suministro de Luminarias" 
+                                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-granverde-600 focus:outline-none"
+                                        required 
+                                    />
+                                </div>
+                                <button type="submit" className="w-full py-2 bg-granverde-700 hover:bg-granverde-800 text-white font-semibold rounded-xl text-xs shadow transition">
+                                    <i className="fa-solid fa-plus me-1"></i> Agregar Tipo de Caso
+                                </button>
+                            </form>
+
+                            <div className="space-y-2 max-h-60 overflow-y-auto">
+                                {tipos.map(t => {
+                                    const dep = departamentos.find(d => d.id === t.departamento_id)?.nombre || '';
+                                    return (
+                                        <div key={t.id} className="p-3 bg-white rounded-xl border border-slate-200 flex justify-between items-center">
+                                            <div>
+                                                <span className="font-semibold text-sm text-slate-800">{t.nombre}</span>
+                                                <p className="text-xs text-slate-400">{dep}</p>
+                                            </div>
+                                            <button 
+                                                onClick={() => toggleTipoActivo(t.id)}
+                                                className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${t.activo ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}>
+                                                {t.activo ? 'Activo' : 'Inactivo'}
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function InformesView({ casos, departamentos, tipos }) {
+            const exportExcel = () => {
+                const dataToExport = casos.map(s => ({
+                    'Código': s.id,
+                    'Fecha Recepción': new Date(s.fecha_recepcion).toLocaleString(),
+                    'Departamento': departamentos.find(d => d.id === s.departamento_id)?.nombre || '',
+                    'Tipo de Caso': tipos.find(t => t.id === s.tipo_solicitud_id)?.nombre || '',
+                    'Cédula': s.cedula,
+                    'Ciudadano': s.nombre_completo,
+                    'Teléfono': s.telefono,
+                    'Sector / Parroquia': s.sector_parroquia,
+                    'Dirección': s.direccion_detallada,
+                    'Prioridad': s.prioridad,
+                    'Estatus': s.estatus,
+                    'Registrado por': s.registrado_por || '',
+                    'Observaciones Cierre': s.observaciones_cierre || '',
+                    'Fecha Cierre': s.fecha_cierre ? new Date(s.fecha_cierre).toLocaleString() : ''
+                }));
+
+                const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Casos Gran Sabana");
+                XLSX.writeFile(workbook, `Reporte_Casos_Gran_Sabana_${new Date().toISOString().slice(0,10)}.xlsx`);
+            };
+
+            const handlePrint = () => {
+                window.print();
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 no-print">
+                        <div>
+                            <h2 className="text-xl font-bold text-slate-900">Módulo de Informes y Exportación</h2>
+                            <p className="text-sm text-slate-500">Genere reportes ejecutivos para el despacho del alcalde o exporte datos a Excel.</p>
+                        </div>
+                        <div className="flex gap-3">
+                            <button 
+                                onClick={exportExcel}
+                                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl text-xs shadow flex items-center space-x-2 transition">
+                                <i className="fa-solid fa-file-excel text-base"></i>
+                                <span>Exportar Datos a Excel (.xlsx)</span>
+                            </button>
+                            <button 
+                                onClick={handlePrint}
+                                className="px-4 py-2.5 bg-granverde-800 hover:bg-granverde-900 text-white font-semibold rounded-xl text-xs shadow flex items-center space-x-2 transition">
+                                <i className="fa-solid fa-print text-base"></i>
+                                <span>Imprimir / Generar PDF Ejecutivo</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 space-y-6 print:shadow-none print:border-0 print:p-0">
+                        <div className="border-b pb-6 flex justify-between items-start">
+                            <div>
+                                <h1 className="text-lg font-bold text-slate-900 uppercase">República Bolivariana de Venezuela</h1>
+                                <h2 className="text-sm font-semibold text-granverde-800">Estado Bolívar • Alcaldía del Municipio Gran Sabana</h2>
+                                <p className="text-xs text-slate-500 mt-1">Sala Situacional y de Autogobierno Ciudadano (Cloud)</p>
+                            </div>
+                            <div className="text-right text-xs text-slate-500">
+                                <p className="font-bold">INFORME EJECUTIVO</p>
+                                <p>Fecha: {new Date().toLocaleDateString()}</p>
+                            </div>
+                        </div>
+
+                        <div>
+                            <h3 className="text-sm font-bold text-slate-900 uppercase mb-3">Resumen Estadístico General de Casos</h3>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                                    <span className="text-xs text-slate-500 font-semibold">Total Casos</span>
+                                    <p className="text-2xl font-bold text-slate-900 mt-1">{casos.length}</p>
+                                </div>
+                                <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
+                                    <span className="text-xs text-blue-600 font-semibold">En Proceso / Recibidos</span>
+                                    <p className="text-2xl font-bold text-blue-700 mt-1">{casos.filter(s => s.estatus === 'Recibido' || s.estatus === 'En Trámite').length}</p>
+                                </div>
+                                <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-100">
+                                    <span className="text-xs text-emerald-600 font-semibold">Casos Cerrados (Resueltos)</span>
+                                    <p className="text-2xl font-bold text-emerald-700 mt-1">{casos.filter(s => s.estatus === 'Cerrado').length}</p>
+                                </div>
+                                <div className="p-4 bg-amber-50 rounded-xl border border-amber-100">
+                                    <span className="text-xs text-amber-600 font-semibold">Urgentes / Alta Prioridad</span>
+                                    <p className="text-2xl font-bold text-amber-700 mt-1">{casos.filter(s => s.prioridad === 'Urgente' || s.prioridad === 'Alta').length}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <h3 className="text-sm font-bold text-slate-900 uppercase mb-3">Detalle de Casos Registrados</h3>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left text-xs border-collapse border border-slate-200">
+                                    <thead>
+                                        <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                                            <th className="p-2.5 border border-slate-200">Código</th>
+                                            <th className="p-2.5 border border-slate-200">Fecha</th>
+                                            <th className="p-2.5 border border-slate-200">Ciudadano (Cédula)</th>
+                                            <th className="p-2.5 border border-slate-200">Parroquia / Sector</th>
+                                            <th className="p-2.5 border border-slate-200">Estatus</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {casos.length === 0 ? (
+                                            <tr>
+                                                <td colSpan="5" className="p-4 text-center text-slate-400">No hay casos registrados actualmente.</td>
+                                            </tr>
+                                        ) : (
+                                            casos.map(s => (
+                                                <tr key={s.id} className="border-b border-slate-200">
+                                                    <td className="p-2.5 border border-slate-200 font-bold">{s.id}</td>
+                                                    <td className="p-2.5 border border-slate-200">{new Date(s.fecha_recepcion).toLocaleDateString()}</td>
+                                                    <td className="p-2.5 border border-slate-200">{s.nombre_completo} ({s.cedula})</td>
+                                                    <td className="p-2.5 border border-slate-200">{s.sector_parroquia}</td>
+                                                    <td className="p-2.5 border border-slate-200 font-semibold">{s.estatus}</td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div className="pt-8 border-t border-slate-200 flex justify-between text-xs text-slate-500 mt-12">
+                            <div>
+                                <p className="font-bold text-slate-800">Sala Situacional y de Autogobierno (Cloud)</p>
+                                <p>Alcaldía del Municipio Gran Sabana</p>
+                            </div>
+                            <div className="text-right">
+                                <div className="h-12 border-b border-slate-400 w-48 mb-1"></div>
+                                <p>Firma y Sello Autorizado</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
